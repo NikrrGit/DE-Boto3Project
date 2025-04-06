@@ -1,0 +1,6 @@
+boto3
+pandas
+pyspark
+mysql-connector-python
+cryptography
+findspark 
