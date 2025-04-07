@@ -2,6 +2,13 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import random
+import boto3
+import os
+from dotenv import load_dotenv
+import io
+
+# Load environment variables
+load_dotenv()
 
 # Generate random sales data
 def generate_sales_data(num_records=100):
@@ -27,11 +34,41 @@ def generate_sales_data(num_records=100):
     
     return df
 
+def upload_to_s3(df, bucket_name, s3_key):
+    try:
+        # Initialize S3 client
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.getenv('AWS_DEFAULT_REGION')
+        )
+        
+        # Convert DataFrame to CSV in memory
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        
+        # Upload to S3
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=s3_key,
+            Body=csv_buffer.getvalue()
+        )
+        
+        print(f"Successfully uploaded data to s3://{bucket_name}/{s3_key}")
+        return True
+        
+    except Exception as e:
+        print(f"Error uploading to S3: {str(e)}")
+        return False
+
 # Generate and save the data
 if __name__ == "__main__":
-    # Generate 100 records
+    # Generate data
     sales_data = generate_sales_data(100)
     
-    # Save to CSV
-    sales_data.to_csv('sales_data.csv', index=False)
-    print("Sales data generated and saved to sales_data.csv") 
+    # Upload directly to S3
+    bucket_name = "project-de-001"
+    s3_key = "sales_mart/sales_data.csv"
+    
+    upload_to_s3(sales_data, bucket_name, s3_key) 

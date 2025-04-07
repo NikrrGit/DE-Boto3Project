@@ -1,77 +1,77 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import *
-from pyspark.sql.types import *
+from pyspark.sql.functions import sum, avg, count, col
 import os
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-# Initialize Spark session
+# Initialize Spark session with MySQL connector
 spark = SparkSession.builder \
     .appName("SalesDataProcessing") \
-    .config("spark.jars", "mysql-connector-java-8.0.28.jar") \
+    .config("spark.jars", "jars/mysql-connector-java-8.0.28.jar,jars/hadoop-aws-3.3.4.jar,jars/aws-java-sdk-bundle-1.12.262.jar") \
+    .config("spark.hadoop.fs.s3a.access.key", os.getenv('AWS_ACCESS_KEY_ID')) \
+    .config("spark.hadoop.fs.s3a.secret.key", os.getenv('AWS_SECRET_ACCESS_KEY')) \
+    .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
     .getOrCreate()
 
-# Read sales data from local file
-def read_sales_data():
-    local_path = "sales_data.csv"  # The file is in the root directory
-    return spark.read.csv(local_path, header=True, inferSchema=True)
-
-# Process customer monthly purchases
-def process_customer_purchases(df):
-    return df.groupBy("customer_id", date_format("sales_date", "yyyy-MM").alias("purchase_month")) \
-        .agg(
-            sum("total_cost").alias("total_purchases"),
-            count("*").alias("purchase_count"),
-            avg("total_cost").alias("avg_purchase_amount")
-        )
-
-# Process sales team incentives
-def process_sales_incentives(df):
-    return df.groupBy("sales_person_id", date_format("sales_date", "yyyy-MM").alias("sales_month")) \
-        .agg(
-            sum("total_cost").alias("total_sales"),
-            count("*").alias("transaction_count"),
-            avg("total_cost").alias("avg_transaction_value")
-        )
-
-# Write to MySQL
-def write_to_mysql(df, table_name):
-    df.write \
-        .format("jdbc") \
-        .option("url", f"jdbc:mysql://{os.getenv('DB_HOST')}/{os.getenv('DB_NAME')}") \
-        .option("driver", "com.mysql.cj.jdbc.Driver") \
-        .option("dbtable", table_name) \
-        .option("user", os.getenv('DB_USER')) \
-        .option("password", os.getenv('DB_PASSWORD')) \
-        .mode("overwrite") \
-        .save()
-
-def main():
+def process_sales_data():
     try:
-        # Read data
-        print("Reading sales data...")
-        sales_df = read_sales_data()
+        print("Reading sales data from S3...")
+        # Read sales data from S3
+        sales_df = spark.read.csv("s3a://project-de-001/sales_mart/sales_data.csv", 
+                                header=True, 
+                                inferSchema=True)
         
-        # Process data
         print("Processing customer purchases...")
-        customer_purchases = process_customer_purchases(sales_df)
-        print("Processing sales incentives...")
-        sales_incentives = process_sales_incentives(sales_df)
+        # Process customer purchases
+        customer_purchases = sales_df.groupBy("customer_id") \
+            .agg(
+                sum("total_cost").alias("total_purchases"),
+                avg("total_cost").alias("avg_purchase"),
+                count("*").alias("purchase_count")
+            )
         
-        # Write to MySQL
+        print("Processing sales incentives...")
+        # Process sales team incentives (5% commission)
+        sales_incentives = sales_df.groupBy("sales_person_id") \
+            .agg(
+                sum("total_cost").alias("total_sales")
+            ) \
+            .withColumn("commission", col("total_sales") * 0.05)
+        
+        # MySQL connection properties
+        mysql_properties = {
+            "user": os.getenv('DB_USER'),
+            "password": os.getenv('DB_PASSWORD'),
+            "driver": "com.mysql.cj.jdbc.Driver"
+        }
+        
+        mysql_url = f"jdbc:mysql://{os.getenv('DB_HOST')}/{os.getenv('DB_NAME')}"
+        
         print("Writing customer purchases to MySQL...")
-        write_to_mysql(customer_purchases, "customer_monthly_purchases")
+        # Write customer purchases to MySQL
+        customer_purchases.write \
+            .mode("overwrite") \
+            .jdbc(url=mysql_url, 
+                  table="customer_purchases", 
+                  properties=mysql_properties)
+        
         print("Writing sales incentives to MySQL...")
-        write_to_mysql(sales_incentives, "sales_team_incentives")
+        # Write sales incentives to MySQL
+        sales_incentives.write \
+            .mode("overwrite") \
+            .jdbc(url=mysql_url, 
+                  table="sales_team_incentives", 
+                  properties=mysql_properties)
         
         print("Data processing completed successfully!")
         
     except Exception as e:
         print(f"Error processing data: {str(e)}")
+        raise e
     finally:
         spark.stop()
 
 if __name__ == "__main__":
-    main() 
+    process_sales_data() 
